@@ -111,8 +111,17 @@ Run the guided walkthrough of all seven capabilities:
 Run the web UI:
 
 ```bash
+cp .env.example .env
+# Uncomment the roles you need and set independently generated secrets.
 .venv/bin/python -m founder_agent.cli serve    # http://127.0.0.1:8000
 ```
+
+The HTTP API fails closed when no bearer credentials are configured. Set the
+role-specific `FA_API_*_TOKEN` values in `.env`, then enter the appropriate token
+in the UI's authentication field. `reader` can query the corpus; `approver` can
+review and decide actions; `executor` can execute approved actions; `auditor` can
+read audit records; and `admin` has all permissions. Action approval additionally
+requires a distinct `FA_APPROVER_TOKEN`; there is no development default.
 
 Run the tests, including the attacks against our own controls:
 

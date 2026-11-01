@@ -200,9 +200,10 @@ class ActionGateway:
 
     # -- internals ---------------------------------------------------------
     def _valid_token(self, token: str | None) -> bool:
-        if not token:
+        configured = self.settings.approver_token
+        if not token or not configured or len(configured) < 32:
             return False
-        return hmac.compare_digest(token, self.settings.approver_token)
+        return hmac.compare_digest(token, configured)
 
     def _deny_attempt(self, action_id: str, principal: Principal, reason: str) -> None:
         action = self._actions.get(action_id)

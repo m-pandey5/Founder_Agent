@@ -76,8 +76,8 @@
   .why b{color:var(--text2);font-weight:600}
 
   .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-  input[type=text]{flex:1;min-width:280px;background:var(--panel);border:1px solid var(--line2);color:var(--text);padding:11px 13px;border-radius:6px;font:inherit;font-size:14.5px}
-  input[type=text]:focus{outline:none;border-color:var(--accent)}
+  input[type=text],input[type=password]{flex:1;min-width:280px;background:var(--panel);border:1px solid var(--line2);color:var(--text);padding:11px 13px;border-radius:6px;font:inherit;font-size:14.5px}
+  input[type=text]:focus,input[type=password]:focus{outline:none;border-color:var(--accent)}
   button.go{background:var(--accent);border:0;color:#fff;padding:11px 18px;border-radius:6px;cursor:pointer;font:inherit;font-weight:600}
   button.go:hover{background:var(--accent2)}
   button.go.ghost{background:transparent;border:1px solid var(--line2);color:var(--text2)}
@@ -149,7 +149,8 @@
   <span class="stat" id="st-model"></span>
   <span class="stat" id="st-audit"></span>
   <span class="spacer"></span>
-  <span class="stat note">Veritas Chain · assessment corpus</span>
+  <input type="password" id="apiToken" placeholder="API bearer token" autocomplete="off" style="min-width:220px;max-width:260px;padding:6px 9px;font-size:12px">
+  <button class="go ghost" id="authBtn" style="padding:6px 10px;font-size:12px">Authenticate</button>
 </header>
 
 <nav>
@@ -192,7 +193,15 @@
 <script>
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const api = async (p, o) => { const r = await fetch(p, o); const j = await r.json(); if(!r.ok) throw new Error(j.detail || r.statusText); return j; };
+const api = async (p, o) => {
+  const options = {...(o||{}), headers:{...((o&&o.headers)||{})}};
+  const token = sessionStorage.getItem('fa_api_token');
+  if(token) options.headers.Authorization = `Bearer ${token}`;
+  const r = await fetch(p, options);
+  const j = await r.json();
+  if(!r.ok) throw new Error(j.detail || r.statusText);
+  return j;
+};
 const post = (p, b, h) => api(p, {method:'POST', headers:{'content-type':'application/json', ...(h||{})}, body:JSON.stringify(b||{})});
 const chip = (t, cls) => `<span class="chip ${cls||t}">${esc(t)}</span>`;
 const cites = arr => (arr||[]).map(c => `<span class="cite" onclick="openClaim('${c}')">${c}</span>`).join('');
@@ -205,10 +214,23 @@ const EXAMPLES = [
   'What is our Series A valuation?',
 ];
 let OVERVIEW = null;
+$('#apiToken').value = sessionStorage.getItem('fa_api_token') || '';
+$('#authBtn').onclick = () => {
+  const token = $('#apiToken').value.trim();
+  if(token) sessionStorage.setItem('fa_api_token', token);
+  else sessionStorage.removeItem('fa_api_token');
+  boot();
+};
 
 /* ---------- boot / header ---------- */
 async function boot(){
-  const [h, o] = await Promise.all([api('/api/health'), api('/api/overview')]);
+  let h, o;
+  try {
+    [h, o] = await Promise.all([api('/api/health'), api('/api/overview')]);
+  } catch(e) {
+    $('#out').innerHTML = `<div class="card bad">Authentication required: ${esc(e.message)}</div>`;
+    return;
+  }
   OVERVIEW = o;
   $('#st-corpus').innerHTML = `<b>${o.documents}</b> docs · <b>${o.claims}</b> claims`;
   const degraded = h.degraded;
@@ -431,7 +453,7 @@ function actionCard(a){
     <details style="margin-top:6px"><summary>message body</summary><pre>${esc(a.payload.body||'')}</pre></details>
     ${a.warnings.map(w => `<div class="caveat">${esc(w)}</div>`).join('')}
     ${a.execution_result ? `<pre>${esc(JSON.stringify(a.execution_result, null, 2))}</pre>` : ''}
-    ${pending ? `<div class="row" style="margin-top:10px"><input type="text" id="tok-${a.action_id}" placeholder="approver credential (dev: dev-human-console-token)" style="min-width:320px"><button class="go" onclick="approve('${a.action_id}')">Approve</button><button class="go danger" onclick="denyAct('${a.action_id}')">Deny</button></div><p class="note" style="margin:6px 0 0">Try approving with an empty or wrong credential — the gateway refuses before it reads the action.</p>` : ''}
+    ${pending ? `<div class="row" style="margin-top:10px"><input type="password" id="tok-${a.action_id}" placeholder="approval credential" autocomplete="off" style="min-width:320px"><button class="go" onclick="approve('${a.action_id}')">Approve</button><button class="go danger" onclick="denyAct('${a.action_id}')">Deny</button></div><p class="note" style="margin:6px 0 0">Approval requires both an API role and the separately configured approval credential.</p>` : ''}
     ${a.status === 'APPROVED' ? `<div class="row" style="margin-top:10px"><button class="go" onclick="execAct('${a.action_id}')">Execute now</button><span class="note">re-hashes the payload; refuses if it changed since approval</span></div>` : ''}
   </div>`;
 }
@@ -450,7 +472,7 @@ async function actionCall(id, path, body, headers){
 }
 function approve(id){
   const token = $('#tok-'+id).value.trim();
-  actionCall(id, 'approve', {note:'approved from console'}, {'X-Approver-Token': token, 'X-Approver-Id': 'founder'});
+  actionCall(id, 'approve', {note:'approved from console'}, {'X-Approver-Token': token});
 }
 const denyAct = id => actionCall(id, 'deny', {reason:'denied from console'});
 const execAct = id => actionCall(id, 'execute');

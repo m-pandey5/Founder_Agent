@@ -101,6 +101,12 @@ def cmd_serve(_system, args) -> int:
 
 
 def cmd_demo(system, _args) -> int:
+    # The demo uses a fresh process-local credential when none was configured;
+    # unlike the removed development default, it is random and never printed.
+    if not system.settings.approver_token:
+        from .authorization import new_approver_token
+        system.settings.approver_token = new_approver_token()
+
     _h("2.1  KNOWLEDGE RETRIEVAL - answers carry sources; thin evidence returns UNKNOWN")
     for q in ("What signing algorithm and key custody boundary do we use?",
               "What is our Series A valuation?"):

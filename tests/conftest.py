@@ -24,6 +24,7 @@ def settings(tmp_path_factory) -> Settings:
     s.corpus_dir = ROOT / "corpus"
     s.audit_path = var / "audit.jsonl"
     s.actions_path = var / "actions.jsonl"
+    s.approver_token = "test-approval-gateway-token-32-bytes"
     s.ensure_dirs()
     return s
 

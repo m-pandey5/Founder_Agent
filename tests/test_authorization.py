@@ -3,7 +3,13 @@
 import pytest
 
 from founder_agent.authorization import AuthorizationError, Principal
+from founder_agent.config import Settings
 from founder_agent.schemas import ActionStatus
+
+
+def test_approval_token_has_no_default(monkeypatch):
+    monkeypatch.delenv("FA_APPROVER_TOKEN", raising=False)
+    assert Settings().approver_token is None
 
 
 def _prepare(system, payload=None):

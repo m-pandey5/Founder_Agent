@@ -2,22 +2,29 @@
 
 Route layout mirrors the trust boundary rather than the data model:
 
-* `/api/ask`, `/api/decision`, `/api/contradictions` - agent-reachable, read-only.
-* `/api/actions/{id}/approve|deny` - **human-only**. These require the approver
-  credential, which the agent process is never given.
-* `/api/audit/*` - verification, available to anyone auditing the system.
+* Read routes require a bearer credential with the `reader` role.
+* Action routes require explicit approver/executor permissions.
+* Audit routes require an `auditor` or `admin` credential.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-from fastapi import Body, FastAPI, Header, HTTPException
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Security
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from .app import FounderAgentSystem, build_system
+from .api_auth import (
+    ApiAuthenticationError,
+    ApiAuthorizationError,
+    ApiIdentity,
+    authenticate,
+    authorize,
+)
 from .authorization import AuthorizationError, Principal
 from .schemas import ActionStatus, canonical_hash
 
@@ -29,6 +36,32 @@ app = FastAPI(
     description="Institutional memory with evidence discipline and a human authorization gate.",
 )
 system: FounderAgentSystem = build_system()
+bearer_scheme = HTTPBearer(auto_error=False)
+
+
+def require_permission(permission: str) -> Callable[..., ApiIdentity]:
+    """FastAPI dependency that authenticates first, then applies RBAC."""
+    def dependency(
+        credentials: HTTPAuthorizationCredentials | None = Security(bearer_scheme),
+    ) -> ApiIdentity:
+        try:
+            identity = authenticate(
+                credentials.credentials if credentials else None,
+                system.settings,
+            )
+        except ApiAuthenticationError as exc:
+            raise HTTPException(
+                status_code=401,
+                detail=str(exc),
+                headers={"WWW-Authenticate": "Bearer"},
+            ) from exc
+        try:
+            authorize(identity, permission)
+        except ApiAuthorizationError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        return identity
+
+    return dependency
 
 
 class AskRequest(BaseModel):
@@ -53,7 +86,7 @@ def index() -> str:
 
 
 @app.get("/api/health")
-def health() -> dict[str, Any]:
+def health(_identity: ApiIdentity = Depends(require_permission("read"))) -> dict[str, Any]:
     return {
         "status": "ok",
         "documents": len(system.documents),
@@ -72,7 +105,7 @@ def health() -> dict[str, Any]:
 
 
 @app.get("/api/overview")
-def overview() -> dict[str, Any]:
+def overview(_identity: ApiIdentity = Depends(require_permission("read"))) -> dict[str, Any]:
     """Everything the landing view needs in one call."""
     from collections import Counter
     types = Counter(c.claim_type.value for c in system.claims)
@@ -105,7 +138,10 @@ def overview() -> dict[str, Any]:
 
 
 @app.get("/api/audit/traces")
-def audit_traces(limit: int = 30) -> dict[str, Any]:
+def audit_traces(
+    limit: int = 30,
+    _identity: ApiIdentity = Depends(require_permission("audit")),
+) -> dict[str, Any]:
     """Distinct interactions, newest first, for the trace picker."""
     seen: dict[str, dict[str, Any]] = {}
     for e in system.audit.entries():
@@ -124,26 +160,35 @@ def audit_traces(limit: int = 30) -> dict[str, Any]:
 
 
 @app.post("/api/ask")
-def ask(req: AskRequest) -> dict[str, Any]:
+def ask(
+    req: AskRequest,
+    identity: ApiIdentity = Depends(require_permission("read")),
+) -> dict[str, Any]:
     if not req.question.strip():
         raise HTTPException(400, "question is required")
     response = system.orchestrator.ask(
         req.question,
-        principal=Principal(kind="human", id="founder"),
+        principal=Principal(kind="human", id=identity.subject),
         prepare_action=req.prepare_action,
     )
     return response.model_dump(mode="json")
 
 
 @app.post("/api/decision")
-def decision(req: DecisionRequest) -> dict[str, Any]:
+def decision(
+    req: DecisionRequest,
+    _identity: ApiIdentity = Depends(require_permission("read")),
+) -> dict[str, Any]:
     answer = system.knowledge.answer(req.question)
     lookup = system.ledger.lookup(req.question, [e.doc_id for e in answer.evidence])
     return lookup.model_dump(mode="json")
 
 
 @app.get("/api/contradictions")
-def contradictions(detail: bool = False) -> dict[str, Any]:
+def contradictions(
+    detail: bool = False,
+    _identity: ApiIdentity = Depends(require_permission("read")),
+) -> dict[str, Any]:
     clusters = system.detector.cluster()
     return {
         "cluster_count": len(clusters),
@@ -158,7 +203,7 @@ def contradictions(detail: bool = False) -> dict[str, Any]:
 
 
 @app.get("/api/documents")
-def documents() -> dict[str, Any]:
+def documents(_identity: ApiIdentity = Depends(require_permission("read"))) -> dict[str, Any]:
     return {"documents": [
         {"doc_id": d.doc_id, "title": d.title, "doc_type": d.doc_type, "date": str(d.date),
          "authority": d.authority.value, "source": d.source, "claims": len(d.claims),
@@ -169,7 +214,10 @@ def documents() -> dict[str, Any]:
 
 
 @app.get("/api/documents/{doc_id}")
-def document(doc_id: str) -> dict[str, Any]:
+def document(
+    doc_id: str,
+    _identity: ApiIdentity = Depends(require_permission("read")),
+) -> dict[str, Any]:
     doc = next((d for d in system.documents if d.doc_id == doc_id), None)
     if doc is None:
         raise HTTPException(404, f"unknown document {doc_id}")
@@ -182,7 +230,7 @@ def document(doc_id: str) -> dict[str, Any]:
 
 
 @app.get("/api/ledger")
-def ledger() -> dict[str, Any]:
+def ledger(_identity: ApiIdentity = Depends(require_permission("read"))) -> dict[str, Any]:
     return {"entries": [e.model_dump(mode="json") for e in system.ledger.entries.values()]}
 
 
@@ -190,12 +238,17 @@ def ledger() -> dict[str, Any]:
 # Action lifecycle - the human boundary
 # --------------------------------------------------------------------------
 @app.get("/api/actions")
-def actions() -> dict[str, Any]:
+def actions(
+    _identity: ApiIdentity = Depends(require_permission("actions:read")),
+) -> dict[str, Any]:
     return {"actions": [a.model_dump(mode="json") for a in system.gateway.all()]}
 
 
 @app.get("/api/actions/{action_id}")
-def action(action_id: str) -> dict[str, Any]:
+def action(
+    action_id: str,
+    _identity: ApiIdentity = Depends(require_permission("actions:read")),
+) -> dict[str, Any]:
     found = system.gateway.get(action_id)
     if found is None:
         raise HTTPException(404, f"unknown action {action_id}")
@@ -206,11 +259,11 @@ def action(action_id: str) -> dict[str, Any]:
 def approve(
     action_id: str,
     x_approver_token: str | None = Header(default=None, alias="X-Approver-Token"),
-    x_approver_id: str = Header(default="founder", alias="X-Approver-Id"),
     note: str = Body(default="", embed=True),
+    identity: ApiIdentity = Depends(require_permission("actions:approve")),
 ) -> dict[str, Any]:
     """Human-only. The credential is presented by the console, not the agent."""
-    principal = Principal(kind="human", id=x_approver_id, token=x_approver_token)
+    principal = Principal(kind="human", id=identity.subject, token=x_approver_token)
     try:
         return system.gateway.approve(action_id, principal, note).model_dump(mode="json")
     except AuthorizationError as exc:
@@ -221,9 +274,9 @@ def approve(
 def deny(
     action_id: str,
     req: DenyRequest,
-    x_approver_id: str = Header(default="founder", alias="X-Approver-Id"),
+    identity: ApiIdentity = Depends(require_permission("actions:approve")),
 ) -> dict[str, Any]:
-    principal = Principal(kind="human", id=x_approver_id)
+    principal = Principal(kind="human", id=identity.subject)
     try:
         return system.gateway.deny(action_id, principal, req.reason).model_dump(mode="json")
     except AuthorizationError as exc:
@@ -233,9 +286,9 @@ def deny(
 @app.post("/api/actions/{action_id}/execute")
 def execute(
     action_id: str,
-    x_approver_id: str = Header(default="founder", alias="X-Approver-Id"),
+    identity: ApiIdentity = Depends(require_permission("actions:execute")),
 ) -> dict[str, Any]:
-    principal = Principal(kind="human", id=x_approver_id)
+    principal = Principal(kind="human", id=identity.subject)
     try:
         return system.gateway.execute(action_id, principal).model_dump(mode="json")
     except AuthorizationError as exc:
@@ -246,12 +299,15 @@ def execute(
 # Audit
 # --------------------------------------------------------------------------
 @app.get("/api/audit/verify")
-def audit_verify() -> dict[str, Any]:
+def audit_verify(_identity: ApiIdentity = Depends(require_permission("audit"))) -> dict[str, Any]:
     return system.audit.verify()
 
 
 @app.get("/api/audit/trace/{trace_id}")
-def audit_trace(trace_id: str) -> dict[str, Any]:
+def audit_trace(
+    trace_id: str,
+    _identity: ApiIdentity = Depends(require_permission("audit")),
+) -> dict[str, Any]:
     record = system.audit.reconstruct(trace_id)
     if not record["event_count"]:
         raise HTTPException(404, f"no audit entries for {trace_id}")
@@ -259,7 +315,10 @@ def audit_trace(trace_id: str) -> dict[str, Any]:
 
 
 @app.get("/api/audit/recent")
-def audit_recent(limit: int = 50) -> dict[str, Any]:
+def audit_recent(
+    limit: int = 50,
+    _identity: ApiIdentity = Depends(require_permission("audit")),
+) -> dict[str, Any]:
     entries = system.audit.entries()[-limit:]
     return {"count": len(entries), "entries": entries}
 
@@ -268,9 +327,14 @@ def audit_recent(limit: int = 50) -> dict[str, Any]:
 # Live security self-test - the controls, exercised rather than described
 # --------------------------------------------------------------------------
 @app.post("/api/security/selftest")
-def security_selftest() -> JSONResponse:
+def security_selftest(
+    _identity: ApiIdentity = Depends(require_permission("admin")),
+) -> JSONResponse:
     from .guards import scan_for_injection
     from .ingest import split_sentences  # noqa: F401  (import proves module wiring)
+
+    if not system.settings.approver_token:
+        raise HTTPException(503, "FA_APPROVER_TOKEN is required to run the authorization self-test")
 
     results: list[dict[str, Any]] = []
 
@@ -363,11 +427,16 @@ def security_selftest() -> JSONResponse:
 
 
 @app.get("/api/security/payload-hash")
-def payload_hash(sample: str = "demo") -> dict[str, str]:
+def payload_hash(
+    sample: str = "demo",
+    _identity: ApiIdentity = Depends(require_permission("admin")),
+) -> dict[str, str]:
     return {"sample": sample, "hash": canonical_hash({"sample": sample})}
 
 
 @app.get("/api/actions/pending/count")
-def pending_count() -> dict[str, int]:
+def pending_count(
+    _identity: ApiIdentity = Depends(require_permission("actions:read")),
+) -> dict[str, int]:
     return {"pending": len([a for a in system.gateway.all()
                             if a.status is ActionStatus.PENDING])}

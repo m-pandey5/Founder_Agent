@@ -24,6 +24,19 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _api_tokens_from_env() -> dict[str, str]:
+    """Load role credentials without ever providing an insecure fallback."""
+    names = {
+        "reader": "FA_API_READER_TOKEN",
+        "approver": "FA_API_APPROVER_TOKEN",
+        "executor": "FA_API_EXECUTOR_TOKEN",
+        "auditor": "FA_API_AUDITOR_TOKEN",
+        "admin": "FA_API_ADMIN_TOKEN",
+    }
+    return {role: token for role, name in names.items()
+            if (token := os.environ.get(name))}
+
+
 @dataclass
 class Settings:
     corpus_dir: Path = ROOT / "corpus"
@@ -46,11 +59,16 @@ class Settings:
     anthropic_model: str = os.environ.get("FA_ANTHROPIC_MODEL", "claude-haiku-4-5")
     openai_model: str = os.environ.get("FA_OPENAI_MODEL", "gpt-4.1")
 
+    # API authentication. Tokens are role-specific and have no defaults. With
+    # no configured tokens every protected API route fails closed with 401.
+    api_tokens: dict[str, str] = field(default_factory=_api_tokens_from_env)
+
     # Human authorization
     action_ttl_seconds: int = _env_int("FA_ACTION_TTL", 900)
     #: Shared secret that the *human* console must present. An agent process
     #: never receives this value; see docs/THREAT_MODEL.md.
-    approver_token: str = os.environ.get("FA_APPROVER_TOKEN", "dev-human-console-token")
+    approver_token: str | None = field(
+        default_factory=lambda: os.environ.get("FA_APPROVER_TOKEN"))
 
     # Guards
     max_delegation_depth: int = _env_int("FA_MAX_DEPTH", 2)
