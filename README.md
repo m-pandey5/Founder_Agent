@@ -1,4 +1,4 @@
-# Founder Intelligence Agent
+# Founder_Agent
 
 A working prototype of an institutional-memory agent for Veritas Chain Technologies,
 built against the supplied 18-document set.
@@ -98,7 +98,7 @@ Red: untrusted data. Green: the human authorization boundary. Blue: the audit lo
 ## Quickstart
 
 ```bash
-cd founder-agent
+cd Founder_Agent
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 ```
 

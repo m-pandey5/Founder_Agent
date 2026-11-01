@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Founder Intelligence Agent - one-command setup and run.
+# Founder_Agent - one-command setup and run.
 set -euo pipefail
 cd "$(dirname "$0")"
 

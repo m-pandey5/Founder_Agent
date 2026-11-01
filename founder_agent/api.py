@@ -24,7 +24,7 @@ from .schemas import ActionStatus, canonical_hash
 UI_PATH = Path(__file__).resolve().parent.parent / "ui" / "index.html"
 
 app = FastAPI(
-    title="Founder Intelligence Agent",
+    title="Founder_Agent",
     version="1.0.0",
     description="Institutional memory with evidence discipline and a human authorization gate.",
 )
